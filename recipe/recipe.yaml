@@ -1,7 +1,7 @@
 schema_version: 1
 
 context:
-  version: "0.1.1"
+  version: "0.1.2"
 
 package:
   name: r-yr
@@ -9,14 +9,10 @@ package:
 
 source:
   url: https://github.com/y-crdt/yr/archive/refs/tags/v${{ version }}.tar.gz
-  sha256: e858d06ab55612c6b3bce7805f5682bdd631151fec57fcf3242de3a91370cbd6
-  patches:
-    - patches/0001-libdir-cargo-build-target.patch
-    - patches/0001-Remove-document-step.patch
+  sha256: b515c7bd871ddf17cf2830d2e113837f271db70d5fad33aa0c90bd12f627d69c
 
 build:
-  skip: win
-  number: 1
+  number: 0
   dynamic_linking:
     rpaths:
       - lib/R/lib/
@@ -25,32 +21,73 @@ build:
     env:
       NOT_CRAN: "1"
       DISABLE_AUTOBREW: "1"
+      EXTENDR_SKIP_BUILD_WRAPPERS: "1"
     content:
-      - |
-        # Make libR findable for Cargo and R wrapper scripts
-        export RUSTFLAGS="-C link-arg=-L${PREFIX}/lib/R/lib ${RUSTFLAGS}"
-        export LD_LIBRARY_PATH="${PREFIX}/lib/R/lib:${LD_LIBRARY_PATH:-}"
-        export DYLD_LIBRARY_PATH="${PREFIX}/lib/R/lib:${DYLD_LIBRARY_PATH:-}"
+      - if: unix
+        then:
+          - |
+            # Make libR findable for Cargo and R wrapper scripts
+            export RUSTFLAGS="-C link-arg=-L${PREFIX}/lib/R/lib ${RUSTFLAGS}"
+            export LD_LIBRARY_PATH="${PREFIX}/lib/R/lib:${LD_LIBRARY_PATH:-}"
+            export DYLD_LIBRARY_PATH="${PREFIX}/lib/R/lib:${DYLD_LIBRARY_PATH:-}"
 
-        ${R} CMD INSTALL --build . ${R_ARGS}
+            ${R} CMD INSTALL --build . ${R_ARGS}
 
-        # Bundle third party licenses from statically linked crates
-        cd src/rust
-        cargo-bundle-licenses --format yaml --output "${SRC_DIR}/THIRDPARTY.yml"
+            # Bundle third party licenses from statically linked crates
+            cd src/rust
+            cargo-bundle-licenses --format yaml --output "${SRC_DIR}/THIRDPARTY.yml"
+      - if: win
+        then:
+          - |
+            @rem R on conda-forge Windows is built with Rtools (MinGW), so Rust
+            @rem must target the GNU ABI. tools/config.R / Makevars.win.in honor
+            @rem CARGO_BUILD_TARGET (paired with rust-std-x86_64-pc-windows-gnu).
+            set "CARGO_BUILD_TARGET=x86_64-pc-windows-gnu"
+
+            @rem Point Rust at R's import library (libR) rem build links
+            @rem raw-dylib crates (windows-targets, parking_lot_core) need
+            @rem dlltool; conda-forge binutils ships it target-prefixed only
+            set "RUSTFLAGS=-L native=%PREFIX%/lib/R/bin/x64 -l R -C dlltool=x86_64-w64-mingw32-dlltool.exe"
+
+            "%R%" CMD INSTALL --build .
+            if %ERRORLEVEL% neq 0 exit 1
+
+            @rem Bundle third party licenses from statically linked crates
+            cd src\rust
+            cargo-bundle-licenses --format yaml --output "%SRC_DIR%\THIRDPARTY.yml"
+            if %ERRORLEVEL% neq 0 exit 1
 
 requirements:
   build:
-    - ${{ compiler('c') }}
-    - ${{ stdlib('c') }}
+    - if: unix
+      then:
+        - ${{ compiler('c') }}
+        - ${{ stdlib('c') }}
+      else:
+        # Provides the MinGW toolchain matching conda-forge's Rtools-built R.
+        - gcc
+        - rust-std-x86_64-pc-windows-gnu
     - ${{ compiler('rust') }}
     - if: build_platform != target_platform
       then:
         - cross-r-base ${{ r_base }}.*
     - cargo-bundle-licenses
-    - autoconf
-    - automake
-    - pkg-config
-    - make
+    - if: unix
+      then:
+        - autoconf
+        - automake
+        - pkg-config
+        - make
+      else:
+        - m2-autoconf
+        - m2-automake-wrapper
+        - m2-coreutils
+        - m2-filesystem
+        - m2-grep
+        - m2-make
+        - m2-pkg-config
+        - m2-sed
+        - m2-zip
   host:
     - r-base
   run:
